@@ -24,7 +24,7 @@ app.use(helmet({
 
 app.use(cors({
   origin: config.NODE_ENV === 'production' 
-    ? ['https://yourdomain.com'] 
+    ? ['https://cool-blog-app-gg.onrender.com'] 
     : '*',
   credentials: true
 }));
