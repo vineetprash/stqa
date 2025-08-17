@@ -1,6 +1,7 @@
-// utils/viewAnalytics.js
 
 // Analytics for monitoring view patterns and detecting potential spam
+const config = require('../config/config');
+
 class ViewAnalytics {
   constructor() {
     this.suspiciousIPs = new Set();
@@ -48,6 +49,7 @@ class ViewAnalytics {
   checkSuspiciousActivity(pattern) {
     const { totalViews, blockedViews, posts, userAgents } = pattern;
     const suspiciousRatio = blockedViews / totalViews;
+    const isDevelopment = config.NODE_ENV === 'development';
 
     // Flag as suspicious if:
     // 1. Too many views per hour
@@ -58,13 +60,26 @@ class ViewAnalytics {
       posts.size > this.alertThresholds.maxPostsPerHour ||
       suspiciousRatio > this.alertThresholds.suspiciousRatio
     ) {
-      this.suspiciousIPs.add(pattern.ip);
-      console.warn(`Suspicious activity detected from IP: ${pattern.ip}`, {
-        totalViews,
-        blockedViews,
-        postsViewed: posts.size,
-        suspiciousRatio: suspiciousRatio.toFixed(2)
-      });
+      if (isDevelopment) {
+        // In development, just log but don't permanently flag
+        console.warn(`[DEV MODE] Suspicious activity detected from IP: ${pattern.ip} (not blocking)`, {
+          totalViews,
+          blockedViews,
+          postsViewed: posts.size,
+          suspiciousRatio: suspiciousRatio.toFixed(2),
+          note: 'IP not permanently blocked in development mode'
+        });
+        // Don't add to suspicious IPs in development
+      } else {
+        // In production, flag as suspicious
+        this.suspiciousIPs.add(pattern.ip);
+        console.warn(`Suspicious activity detected from IP: ${pattern.ip}`, {
+          totalViews,
+          blockedViews,
+          postsViewed: posts.size,
+          suspiciousRatio: suspiciousRatio.toFixed(2)
+        });
+      }
     }
   }
 
@@ -126,7 +141,26 @@ class ViewAnalytics {
 
   // Check if IP is flagged as suspicious
   isSuspicious(ip) {
+    const isDevelopment = config.NODE_ENV === 'development';
+    
+    if (isDevelopment) {
+      // In development mode, never consider IPs as permanently suspicious
+      // This allows for easier testing and development
+      return false;
+    }
+    
     return this.suspiciousIPs.has(ip);
+  }
+
+  // Force clear suspicious IPs (useful for development/testing)
+  clearSuspiciousIPs() {
+    this.suspiciousIPs.clear();
+    console.log('All suspicious IPs cleared');
+  }
+
+  // Get current suspicious IPs (for debugging)
+  getSuspiciousIPs() {
+    return Array.from(this.suspiciousIPs);
   }
 }
 

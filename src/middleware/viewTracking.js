@@ -1,6 +1,7 @@
 // middleware/viewTracking.js
 const rateLimit = require('express-rate-limit');
 const viewAnalytics = require('../utils/viewAnalytics');
+const config = require('../config/config');
 
 // In-memory store for tracking views (in production, use Redis)
 const viewTracker = {
@@ -135,11 +136,23 @@ const validateView = (req, res, next) => {
   const suspiciousThreshold = 5; // Max 5 views per fingerprint per hour
   const hourlyWindow = 60 * 60 * 1000; // 1 hour
 
+  // In development mode, don't permanently block IPs - just log for debugging
+  const isDevelopment = config.NODE_ENV === 'development';
+
   // Check if IP is already flagged as suspicious
   if (viewAnalytics.isSuspicious(userIp)) {
     req.suspiciousActivity = true;
-    req.shouldCountView = false;
-    viewAnalytics.recordViewAttempt(userIp, postId, true, userAgent);
+    
+    if (isDevelopment) {
+      // In development, allow the view but mark as suspicious for logging
+      console.warn(`[DEV MODE] Suspicious IP detected but allowing view: ${userIp}`);
+      req.shouldCountView = true; // Still count in dev mode for testing
+    } else {
+      // In production, block the view
+      req.shouldCountView = false;
+    }
+    
+    viewAnalytics.recordViewAttempt(userIp, postId, !isDevelopment, userAgent);
     return next();
   }
 
@@ -157,8 +170,22 @@ const validateView = (req, res, next) => {
   // Check if this seems like suspicious activity
   if (recentViews.length >= suspiciousThreshold) {
     req.suspiciousActivity = true;
-    req.shouldCountView = false;
-    viewAnalytics.recordViewAttempt(userIp, postId, true, userAgent);
+    
+    if (isDevelopment) {
+      // In development, allow but log the suspicious activity
+      console.warn(`[DEV MODE] Suspicious activity detected but allowing view:`, {
+        ip: userIp,
+        postId,
+        recentViews: recentViews.length,
+        threshold: suspiciousThreshold
+      });
+      req.shouldCountView = true;
+    } else {
+      // In production, block the view
+      req.shouldCountView = false;
+    }
+    
+    viewAnalytics.recordViewAttempt(userIp, postId, !isDevelopment, userAgent);
   } else {
     // Add current view time
     recentViews.push(now);
