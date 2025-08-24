@@ -17,8 +17,8 @@ const app = express();
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
-      defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
+      // defaultSrc: ["'self'"],
+      styleSrc: ["'self'"],
       scriptSrc: ["'self'"],
       imgSrc: ["'self'", "data:", "https:"]
     }
