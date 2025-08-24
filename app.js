@@ -2,6 +2,9 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const path = require('path');
+const fs = require('fs');
+const https = require('https');
+
 const { connectDatabase } = require('./src/config/database');
 const config = require('./src/config/config');
 const { generalRateLimit } = require('./src/middleware/ratelimit');
@@ -29,9 +32,6 @@ app.use(cors({
   credentials: true
 }));
 
-// Rate limiting
-// app.use('/api/', generalRateLimit);
-
 // Body parsing
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -52,17 +52,10 @@ app.get('/health', (req, res) => {
 // Serve static files from React app build
 app.use(express.static(path.join(__dirname, 'app/dist')));
 
-// Serve React app for all non-API routes (catch-all route)
+// Serve React app for all non-API routes
 app.use((req, res, next) => {
-  // Skip API routes
-  if (req.path.startsWith('/api/')) {
-    return next();
-  }
-  // Skip health check
-  if (req.path === '/health') {
-    return next();
-  }
-  // Serve React app for everything else
+  if (req.path.startsWith('/api/')) return next();
+  if (req.path === '/health') return next();
   if (req.method === 'GET') {
     return res.sendFile(path.join(__dirname, 'app/dist/index.html'));
   }
@@ -104,15 +97,21 @@ app.use((req, res) => {
   });
 });
 
-// Start server
+// Start server with HTTPS
 const startServer = async () => {
   try {
     await connectDatabase();
-    
-    app.listen(config.PORT, () => {
-      console.log(`🚀 Server running on port ${config.PORT}`);
+
+    // Load certs
+    const options = {
+      key: fs.readFileSync(path.join(__dirname, 'key.pem')),
+      cert: fs.readFileSync(path.join(__dirname, 'cert.pem'))
+    };
+
+    https.createServer(options, app).listen(config.PORT || 443, () => {
+      console.log(`🚀 HTTPS server running on port ${config.PORT || 443}`);
       console.log(`📊 Environment: ${config.NODE_ENV}`);
-      console.log(`🔗 Health check: http://localhost:${config.PORT}/health`);
+      console.log(`🔗 Health check: https://localhost:${config.PORT || 443}/health`);
     });
   } catch (error) {
     console.error('Failed to start server:', error);
