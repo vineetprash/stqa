@@ -1,6 +1,10 @@
 const mongoose = require('mongoose');
 
 const postSchema = new mongoose.Schema({
+  images: [{
+    type: String,
+    trim: true
+  }],
   title: {
     type: String,
     required: true,

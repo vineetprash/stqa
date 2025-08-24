@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { BrowserRouter as Router, Routes, Route, Navigate, useNavigate, useParams } from 'react-router-dom'
 import './App.css'
+import "./index.css"
 import LoginForm from './components/LoginForm'
 import StepwiseRegistration from './components/StepwiseRegistration'
 import PostList from './components/PostList'
@@ -12,9 +13,11 @@ import ViewAnalytics from './components/ViewAnalytics'
 
 function App() {
   return (
-    <Router>
-      <AppContent />
-    </Router>
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 to-gray-200">
+      <Router>
+        <AppContent />
+      </Router>
+    </div>
   )
 }
 
@@ -81,7 +84,8 @@ function AppContent() {
   }
 
   return (
-    <div className="app">
+    <div className="min-h-screen  bg-gradient-to-br from-gray-50 to-gray-200 text-gray-800">
+    
       <Header 
         user={user} 
         onLogout={handleLogout}
@@ -94,7 +98,7 @@ function AppContent() {
         </div>
       )} */}
       
-      <main className="main-content">
+      <main className="max-w-4xl mx-auto px-5 py-5 ">
         <Routes>
           <Route 
             path="/" 

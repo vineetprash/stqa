@@ -74,32 +74,32 @@ function LoginForm({ onLogin, onSwitchToRegister }) {
   }
 
   return (
-    <div className="auth-form">
-      <h2 className="text-center mb-2">Login</h2>
+    <div className="bg-white/95 backdrop-blur-sm border border-white/20 rounded-xl p-6 sm:p-8 lg:p-10 shadow-lg max-w-md sm:max-w-lg mx-auto">
+      <h2 className="text-center mb-6 sm:mb-8 text-xl sm:text-2xl font-semibold text-gray-900 tracking-tight">Login</h2>
 
-      {error && <div className="error">{error}</div>}
+      {error && <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-md mb-6 text-sm">{error}</div>}
 
-      <form onSubmit={handleSubmit}>
-        <div className="form-group">
-          <label htmlFor="email">Email</label>
+      <form onSubmit={handleSubmit} className="space-y-6">
+        <div>
+          <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">Email</label>
           <input
             type="email"
             id="email"
             name="email"
-            className="form-input"
+            className="w-full px-4 py-3 border border-gray-200 rounded-md text-base bg-white/80 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:border-transparent focus:bg-white"
             value={formData.email}
             onChange={handleChange}
             required
           />
         </div>
 
-        <div className="form-group">
-          <label htmlFor="password">Password</label>
+        <div>
+          <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-2">Password</label>
           <input
             type="password"
             id="password"
             name="password"
-            className="form-input"
+            className="w-full px-4 py-3 border border-gray-200 rounded-md text-base bg-white/80 transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:border-transparent focus:bg-white"
             value={formData.password}
             onChange={handleChange}
             required
@@ -108,8 +108,7 @@ function LoginForm({ onLogin, onSwitchToRegister }) {
 
         <button 
           type="submit" 
-          className="btn btn-primary" 
-          style={{ width: '100%' }}
+          className="w-full px-5 py-3 border-none rounded-md cursor-pointer text-base font-medium tracking-wide transition-all duration-200 shadow-sm bg-gradient-to-br from-gray-800 to-gray-900 text-white hover:bg-gradient-to-br hover:from-gray-700 hover:to-gray-800 hover:-translate-y-0.5 hover:shadow-md disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
           disabled={loading}
         >
           {loading ? 'Logging in...' : 'Login'}
@@ -117,19 +116,19 @@ function LoginForm({ onLogin, onSwitchToRegister }) {
       </form>
 
       {showVerificationPrompt && (
-        <div className="text-center mt-1">
-          <p style={{ color: '#666', fontSize: '0.9rem' }}>
+        <div className="text-center mt-6">
+          <p className="text-gray-600 text-sm">
             Your email is not verified.{' '}
-            <button className="btn-link" onClick={handleResendVerification}>
+            <button className="text-gray-700 underline hover:text-gray-900 bg-transparent border-none cursor-pointer font-normal transition-colors duration-200" onClick={handleResendVerification}>
               Resend verification email
             </button>
           </p>
         </div>
       )}
 
-      <div className="text-center mt-1">
-        Don't have an account?{' '}
-        <button className="btn-link" onClick={onSwitchToRegister}>
+      <div className="text-center mt-6 pt-6 border-t border-gray-200">
+        <span className="text-gray-600 text-sm">Don't have an account? </span>
+        <button className="text-gray-700 underline hover:text-gray-900 bg-transparent border-none cursor-pointer font-normal transition-colors duration-200" onClick={onSwitchToRegister}>
           Register here
         </button>
       </div>

@@ -1,5 +1,28 @@
 // routes/posts.js
 const express = require('express');
+const multer = require('multer');
+const AWS = require('aws-sdk');
+const storage = multer.memoryStorage();
+const upload = multer({ storage });
+
+// Configure AWS S3
+const s3 = new AWS.S3({
+  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  region: process.env.AWS_REGION
+});
+
+async function uploadToS3(file) {
+  const params = {
+    Bucket: process.env.AWS_S3_BUCKET,
+    Key: `${Date.now()}_${file.originalname}`,
+    Body: file.buffer,
+    ContentType: file.mimetype,
+    // ACL: 'public-read'
+  };
+  const data = await s3.upload(params).promise();
+  return data.Location;
+}
 const Post = require('../models/Post');
 const { authenticateToken, requireRole, optionalAuth } = require('../middleware/auth');
 const { contentRateLimit } = require('../middleware/ratelimit');
@@ -131,16 +154,28 @@ router.post('/view/:identifier', viewRateLimit, optionalAuth, shouldCountView, v
 });
 
 // Create new post
-router.post('/', authenticateToken, contentRateLimit, validatePost, async (req, res) => {
+router.post('/', authenticateToken, contentRateLimit, upload.array('images'), async (req, res) => {
   try {
     const { title, content, status = 'draft', tags = [] } = req.body;
-    console.log("Creating post with ", title, status, tags)
+    let tagArr = [];
+    try {
+      tagArr = JSON.parse(tags);
+    } catch {
+      tagArr = typeof tags === 'string' ? tags.split(',').map(t => t.trim()) : [];
+    }
+
+    let imageUrls = [];
+    if (req.files && req.files.length > 0) {
+      imageUrls = await Promise.all(req.files.map(file => uploadToS3(file)));
+    }
+
     const post = new Post({
       title,
       content,
       author: req.user._id,
       status,
-      tags: Array.isArray(tags) ? tags.slice(0, 10) : []
+      tags: Array.isArray(tagArr) ? tagArr.slice(0, 10) : [],
+      images: imageUrls
     });
 
     await post.save();
@@ -152,7 +187,6 @@ router.post('/', authenticateToken, contentRateLimit, validatePost, async (req, 
       data: { post }
     });
   } catch (error) {
-      console.log("HEEE", error);
     res.status(500).json({
       success: false,
       message: 'Failed to create post',
@@ -162,42 +196,39 @@ router.post('/', authenticateToken, contentRateLimit, validatePost, async (req, 
 });
 
 // Update post
-router.put('/:id', authenticateToken, validatePost, async (req, res) => {
+router.put('/:id', authenticateToken, upload.array('images'), async (req, res) => {
   try {
     const post = await Post.findById(req.params.id);
-
     if (!post) {
-      return res.status(404).json({
-        success: false,
-        message: 'Post not found'
-      });
+      return res.status(404).json({ success: false, message: 'Post not found' });
     }
-
     // Check permissions
     if (req.user.role !== 'admin' && post.author.toString() !== req.user._id.toString()) {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied'
-      });
+      return res.status(403).json({ success: false, message: 'Access denied' });
     }
-
-    const updatedPost = await Post.findByIdAndUpdate(
-      req.params.id,
-      req.body,
-      { new: true, runValidators: true }
-    ).populate('author', 'username profile');
-
-    res.json({
-      success: true,
-      message: 'Post updated successfully',
-      data: { post: updatedPost }
-    });
+    // Handle tags
+    let tagArr = [];
+    try {
+      tagArr = JSON.parse(req.body.tags);
+    } catch {
+      tagArr = typeof req.body.tags === 'string' ? req.body.tags.split(',').map(t => t.trim()) : [];
+    }
+    // Handle images
+    let imageUrls = post.images || [];
+    if (req.files && req.files.length > 0) {
+      const newUrls = await Promise.all(req.files.map(file => uploadToS3(file)));
+      imageUrls = [...imageUrls, ...newUrls];
+    }
+    post.title = req.body.title || post.title;
+    post.content = req.body.content || post.content;
+    post.status = req.body.status || post.status;
+    post.tags = Array.isArray(tagArr) ? tagArr.slice(0, 10) : post.tags;
+    post.images = imageUrls;
+    await post.save();
+    await post.populate('author', 'username profile');
+    res.json({ success: true, message: 'Post updated successfully', data: { post } });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update post',
-      error: error.message
-    });
+    res.status(500).json({ success: false, message: 'Failed to update post', error: error.message });
   }
 });
 
