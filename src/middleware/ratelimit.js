@@ -11,9 +11,9 @@ const generalRateLimit = new TokenBucketRateLimiter({
 // Strict auth rate limiting
 const authRateLimit = new TokenBucketRateLimiter({
   windowMs: 15 * 60 * 1000,      // 15 minutes
-  maxRequests: 5,                // 5 requests per window
-  tokensPerInterval: 1,          // Refill 1 token
-  interval: 3 * 60 * 1000,      // Every 3 minutes
+  maxRequests: 100,                // 100 requests per window
+  tokensPerInterval: 5,          // Refill 5 tokens
+  interval: 1 * 60 * 1000,      // Every 1 minute
   keyGenerator: (req) => `auth:${req.ip}`
 }).middleware();
 
