@@ -43,35 +43,51 @@ router.post('/register', authRateLimit, async (req, res) => {
 
     console.log('🔍 Checking for existing user:', { email, username });
     // Check if user exists with matching email OR username AND is verified
-    const existingUser = await User.findOne({
-      $and: [
-        { $or: [{ email }, { username }] },
-        { verified: true }
-      ]
-    });
+    
 
-    if (existingUser) {
-      console.log('❌ Registration failed: User already exists', existingUser, { 
-        email, 
-        username, 
-        existingEmail: existingUser.email, 
-        existingUsername: existingUser.username 
-      });
+    const existingUser = await User.findOne({
+      $or: [{ email }, { username }],
+   });
+
+    let partiallyRegisteredUser;
+    if (existingUser && existingUser.verified) {
+      partiallyRegisteredUser = null;
+    } else {
+      partiallyRegisteredUser = existingUser;
+    }
+
+    // exists and verified
+    if (existingUser && existingUser.verified) {
+      console.log('❌ Registration failed: User already exists and verified', existingUser);
       return res.status(409).json({
         success: false,
         message: 'User already exists with this email or username'
       });
     }
-
-    console.log('📝 Creating new user:', { email, username, firstName, lastName });
+    let user;
+    // exists and not verified
+    if (partiallyRegisteredUser) {
+      console.log('ℹ️ Partially registered user found, reusing record:', { email, username });
+      partiallyRegisteredUser.username = username;
+      partiallyRegisteredUser.password = password;
+      partiallyRegisteredUser.profile.firstName = firstName;
+      partiallyRegisteredUser.profile.lastName = lastName;
+      partiallyRegisteredUser.save();
+      user = partiallyRegisteredUser;
+    }
+    // doesnt exist
     // Create user but don't mark as verified
-    const user = new User({
-      username,
-      email,
-      password,
-      verified: false,
-      profile: { firstName, lastName }
-    });
+    else {
+      console.log('📝 Creating new user:', { email, username, firstName, lastName });
+      user = new User({
+        username,
+        email,
+        password,
+        // TEMPORARY: Mark as verified for testing
+        verified: true,
+        profile: { firstName, lastName }
+      });
+    }
 
     // Generate OTP
     const otp = user.generateOTP();

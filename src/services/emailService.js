@@ -40,9 +40,60 @@ class EmailService {
       console.log('🔍 Testing email connection...');
       await this.transporter.verify();
       console.log('✅ Email service connection successful');
+      return true;
     } catch (error) {
       console.error('❌ Email service connection failed:', error.message);
       console.error('📧 Email configuration issues detected. Please check your SMTP settings.');
+      
+      
+      return this.setupFallbackTransporter();
+      
+    }
+  }
+
+  async setupFallbackTransporter() {
+    try {
+      // Try with different port configurations for Render.com
+      const fallbackConfigs = [
+        { port: 465, secure: true },   // SSL
+        { port: 2525, secure: false }, // Alternative port
+        { port: 25, secure: false }    // Standard SMTP
+      ];
+
+      for (const config of fallbackConfigs) {
+        try {
+          console.log(`🔄 Trying port ${config.port} (secure: ${config.secure})`);
+          
+          this.transporter = nodemailer.createTransport({
+            host: process.env.SMTP_HOST || 'smtp.gmail.com',
+            port: config.port,
+            secure: config.secure,
+            auth: {
+              user: process.env.SMTP_USER,
+              pass: process.env.SMTP_PASS
+            },
+            tls: {
+              rejectUnauthorized: false
+            },
+            connectionTimeout: 30000,
+            greetingTimeout: 15000,
+            socketTimeout: 30000
+          });
+
+          await this.transporter.verify();
+          console.log(`✅ Fallback email service connected on port ${config.port}`);
+          return true;
+        } catch (err) {
+          console.log(`❌ Port ${config.port} failed: ${err.message}`);
+          continue;
+        }
+      }
+      
+      console.error('💥 All fallback email configurations failed');
+      return false;
+    } catch (error) {
+      console.error('💥 Fallback email setup failed:', error.message);
+      return false;
     }
   }
  
@@ -68,6 +119,8 @@ class EmailService {
 
   async sendOTPEmail(email, otp, firstName = '') {
     try {
+      console.log('📧 Attempting to send OTP email to:', email);
+      
       const mailOptions = {
         from: process.env.FROM_EMAIL || 'noreply@simpleblog.com',
         to: email,
@@ -89,6 +142,7 @@ class EmailService {
       };
 
       const info = await this.transporter.sendMail(mailOptions);
+      console.log('✅ OTP email sent successfully to:', email, 'MessageID:', info.messageId);
       
       // For development with ethereal email
       if (config.NODE_ENV === 'development' && !process.env.SMTP_USER) {
@@ -100,7 +154,24 @@ class EmailService {
         messageId: info.messageId
       };
     } catch (error) {
-      console.error('Email sending failed:', error);
+      console.error('💥 Email sending failed:', {
+        error: error.message,
+        code: error.code,
+        command: error.command,
+        email: email
+      });
+      
+      // For development/testing, don't fail the registration process
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('⚠️ Development mode: Proceeding without email (OTP:', otp, ')');
+        return {
+          success: true,
+          messageId: 'dev-mode-no-email',
+          devMode: true,
+          otp: otp // Include OTP for development
+        };
+      }
+      
       return {
         success: false,
         error: error.message
