@@ -11,17 +11,17 @@ const postRoutes = require('./src/routes/posts');
 
 const app = express();
 
-// Security middleware
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      // defaultSrc: ["'self'"],
-      styleSrc: ["'self'"],
-      scriptSrc: ["'self'"],
-      imgSrc: ["'self'", "data:", "https:"]
-    }
-  }
-}));
+// // Security middleware
+// app.use(helmet({
+//   contentSecurityPolicy: {
+//     directives: {
+//       // defaultSrc: ["'self'"],
+//       styleSrc: ["'self'"],
+//       scriptSrc: ["'self'"],
+//       imgSrc: ["'self'", "data:", "https:"]
+//     }
+//   }
+// }));
 
 app.use(cors({
   origin: config.NODE_ENV === 'production' 
