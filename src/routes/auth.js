@@ -42,9 +42,12 @@ router.post('/register', authRateLimit, async (req, res) => {
     }
 
     console.log('🔍 Checking for existing user:', { email, username });
-    // Check if user exists
+    // Check if user exists with matching email OR username AND is verified
     const existingUser = await User.findOne({
-      $or: [{ email }, { username }]
+      $and: [
+        { $or: [{ email }, { username }] },
+        { verified: true }
+      ]
     });
 
     if (existingUser) {

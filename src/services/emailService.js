@@ -2,22 +2,50 @@ const nodemailer = require('nodemailer');
 const config = require('../config/config');
 
 class EmailService {
-  constructor() {
-    this.transporter = nodemailer.createTransport({
+   constructor() {
+    console.log('📧 Initializing email service with config:', {
       host: process.env.SMTP_HOST || 'smtp.gmail.com',
       port: process.env.SMTP_PORT || 587,
-      secure: false, // true for 465, false for other ports
+      user: process.env.SMTP_USER ? '***configured***' : 'NOT_SET',
+      pass: process.env.SMTP_PASS ? '***configured***' : 'NOT_SET'
+    });
+
+    this.transporter = nodemailer.createTransport({
+      host: process.env.SMTP_HOST || 'smtp.gmail.com',
+      port: parseInt(process.env.SMTP_PORT || '587'),
+      secure: process.env.SMTP_PORT === '465', // true for 465, false for other ports
       auth: {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS
-      }
+      },
+      tls: {
+        rejectUnauthorized: false // Allow self-signed certificates
+      },
+      connectionTimeout: 60000, // 60 seconds
+      greetingTimeout: 30000,    // 30 seconds
+      socketTimeout: 60000       // 60 seconds
     });
+
+    // Test connection on startup
+    this.testConnection();
 
     // For development, use ethereal email for testing
     // if (config.NODE_ENV === 'development' && !process.env.SMTP_USER) {
     //   this.setupTestAccount();
     // }
   }
+
+  async testConnection() {
+    try {
+      console.log('🔍 Testing email connection...');
+      await this.transporter.verify();
+      console.log('✅ Email service connection successful');
+    } catch (error) {
+      console.error('❌ Email service connection failed:', error.message);
+      console.error('📧 Email configuration issues detected. Please check your SMTP settings.');
+    }
+  }
+ 
 
   async setupTestAccount() {
     try {
