@@ -72,7 +72,6 @@ router.post('/register', authRateLimit, async (req, res) => {
       partiallyRegisteredUser.password = password;
       partiallyRegisteredUser.profile.firstName = firstName;
       partiallyRegisteredUser.profile.lastName = lastName;
-      partiallyRegisteredUser.save();
       user = partiallyRegisteredUser;
     }
     // doesnt exist
