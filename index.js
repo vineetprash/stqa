@@ -2,6 +2,8 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const path = require('path');
+const fs = require('fs');
+const https = require('https');
 
 const { connectDatabase } = require('./src/config/database');
 const config = require('./src/config/config');
@@ -12,16 +14,16 @@ const postRoutes = require('./src/routes/posts');
 const app = express();
 
 // Security middleware
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      // defaultSrc: ["'self'"],
-      styleSrc: ["'self'"],
-      scriptSrc: ["'self'"],
-      imgSrc: ["'self'", "data:", "https:"]
-    }
-  }
-}));
+// app.use(helmet({
+//   contentSecurityPolicy: {
+//     directives: {
+//       // defaultSrc: ["'self'"],
+//       styleSrc: ["'self'"],
+//       scriptSrc: ["'self'"],
+//       imgSrc: ["'self'", "data:", "https:"]
+//     }
+//   }
+// }));
 
 app.use(cors({
   origin: config.NODE_ENV === 'production' 
@@ -95,17 +97,22 @@ app.use((req, res) => {
   });
 });
 
-// Start server
+// Start server with HTTPS
 const startServer = async () => {
   try {
     await connectDatabase();
 
-    const PORT = process.env.PORT || 3000;
+    // // Load certs
+    // const options = {
+    //   key: fs.readFileSync(path.join(__dirname, 'key.pem')),
+    //   cert: fs.readFileSync(path.join(__dirname, 'cert.pem'))
+    // };
+    const options = {}
 
-    app.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
+    https.createServer(options, app).listen(config.PORT || 443, () => {
+      console.log(`🚀 HTTPS server running on port ${config.PORT || 443}`);
       console.log(`📊 Environment: ${config.NODE_ENV}`);
-      console.log(`🔗 Health check: http://localhost:${PORT}/health`);
+      console.log(`🔗 Health check: https://localhost:${config.PORT || 443}/health`);
     });
   } catch (error) {
     console.error('Failed to start server:', error);
