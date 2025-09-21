@@ -55,9 +55,9 @@ class EmailService {
     try {
       // Try with different port configurations for Render.com
       const fallbackConfigs = [
-        { port: 465, secure: true },   // SSL
-        { port: 2525, secure: false }, // Alternative port
-        { port: 25, secure: false }    // Standard SMTP
+        // { port: 465, secure: true },   // SSL
+        // { port: 2525, secure: false }, // Alternative port
+        // { port: 25, secure: false }    // Standard SMTP
       ];
 
       for (const config of fallbackConfigs) {
