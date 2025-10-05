@@ -1,6 +1,6 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+const { User } = require('../db');
 const config = require('../config/config');
 const { authenticateToken } = require('../middleware/auth');
 const { authRateLimit } = require('../middleware/ratelimit');
@@ -67,31 +67,38 @@ router.post('/register', authRateLimit, async (req, res) => {
     let user;
     // exists and not verified
     if (partiallyRegisteredUser) {
-      console.log('ℹ️ Partially registered user found, reusing record:', { email, username });
-      partiallyRegisteredUser.username = username;
-      partiallyRegisteredUser.password = password;
-      partiallyRegisteredUser.profile.firstName = firstName;
-      partiallyRegisteredUser.profile.lastName = lastName;
-      user = partiallyRegisteredUser;
+      console.log('ℹ️ Partially registered user found, updating record:', { email, username });
+      
+      // Update the existing user
+      const updateData = {
+        username,
+        password,
+        'profile.firstName': firstName,
+        'profile.lastName': lastName
+      };
+      
+      user = await User.findByIdAndUpdate(partiallyRegisteredUser._id, updateData);
     }
-    // doesnt exist
-    // Create user but don't mark as verified
+    // doesnt exist - create new user
     else {
       console.log('📝 Creating new user:', { email, username, firstName, lastName });
-      user = new User({
+      user = await User.create({
         username,
         email,
         password,
-        // TEMPORARY: Mark as verified for testing
-        verified: true,
+        verified: false, // Will be verified after OTP confirmation
         profile: { firstName, lastName }
       });
     }
 
     // Generate OTP
-    const otp = user.generateOTP();
-    console.log('🔐 OTP generated for user:', { userId: user._id, email });
-    await user.save();
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    user.otp = otp;
+    user.otpExpiry = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+    console.log('🔐 OTP generated for user:', { userId: user._id, email, otp });
+    
+    // Save user with OTP
+    await User.findByIdAndUpdate(user._id, { otp: user.otp, otpExpiry: user.otpExpiry });
     console.log('💾 User saved to database:', { userId: user._id, email });
 
     // Send OTP email
@@ -126,7 +133,7 @@ router.post('/register', authRateLimit, async (req, res) => {
       message: 'Registration failed',
       error: config.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
-  }
+  }b
 });
 
 // Step 2: Verify OTP and complete registration
@@ -165,7 +172,7 @@ router.post('/verify-otp', authRateLimit, async (req, res) => {
 
     console.log('🔐 Verifying OTP for user:', { userId, email: user.email });
     // Verify OTP
-    if (!user.verifyOTP(otp)) {
+    if (!user.otp || !user.otpExpiry || new Date() > user.otpExpiry || user.otp !== otp) {
       console.log('❌ OTP verification failed: Invalid or expired OTP', { userId, email: user.email });
       return res.status(400).json({
         success: false,
@@ -175,9 +182,11 @@ router.post('/verify-otp', authRateLimit, async (req, res) => {
 
     console.log('✅ OTP verified successfully, marking user as verified:', { userId, email: user.email });
     // Mark user as verified and clear OTP
-    user.verified = true;
-    user.clearOTP();
-    await user.save();
+    await User.findByIdAndUpdate(userId, { 
+      verified: true,
+      otp: null,
+      otpExpiry: null
+    });
 
     console.log('📧 Sending welcome email to:', user.email);
     // Send welcome email
@@ -250,8 +259,11 @@ router.post('/resend-otp', authRateLimit, async (req, res) => {
 
     console.log('🔐 Generating new OTP for user:', { userId, email: user.email });
     // Generate new OTP
-    const otp = user.generateOTP();
-    await user.save();
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    await User.findByIdAndUpdate(userId, { 
+      otp: otp,
+      otpExpiry: new Date(Date.now() + 5 * 60 * 1000)
+    });
 
     console.log('📧 Sending new OTP email to:', user.email);
     // Send OTP email
@@ -303,8 +315,9 @@ router.post('/login', authRateLimit, validateLogin, async (req, res) => {
     }
 
     console.log('🔐 Checking password for user:', { userId: user._id, email });
-    // Check password
-    const isPasswordValid = await user.comparePassword(password);
+    // Check password  
+    const bcrypt = require('bcryptjs');
+    const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       console.log('❌ Login failed: Invalid password', { userId: user._id, email });
       return res.status(401).json({

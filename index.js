@@ -3,6 +3,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
 const https = require('https');
 
 const { connectDatabase } = require('./src/config/database');
@@ -26,9 +27,7 @@ const app = express();
 // }));
 
 app.use(cors({
-  origin: config.NODE_ENV === 'production' 
-    ? ['https://cool-blog-app-gg.onrender.com'] 
-    : '*',
+  origin: '*',
   credentials: true
 }));
 
@@ -97,27 +96,50 @@ app.use((req, res) => {
   });
 });
 
-// Start server with HTTPS
+// Start server with HTTP/HTTPS support
 const startServer = async () => {
   try {
     await connectDatabase();
 
-    // // Load certs
-    // const options = {
-    //   key: fs.readFileSync(path.join(__dirname, 'key.pem')),
-    //   cert: fs.readFileSync(path.join(__dirname, 'cert.pem'))
-    // };
-    const options = {}
+    const port = config.PORT || 3000;
+    const useHTTPS = process.env.USE_HTTPS === 'true';
 
-    https.createServer(options, app).listen(config.PORT || 443, () => {
-      console.log(`🚀 HTTPS server running on port ${config.PORT || 443}`);
-      console.log(`📊 Environment: ${config.NODE_ENV}`);
-      console.log(`🔗 Health check: https://localhost:${config.PORT || 443}/health`);
-    });
+    if (useHTTPS) {
+      // Try to start HTTPS server
+      try {
+        const options = {
+          key: fs.readFileSync(path.join(__dirname, 'key.pem')),
+          cert: fs.readFileSync(path.join(__dirname, 'cert.pem'))
+        };
+
+        https.createServer(options, app).listen(port, '0.0.0.0', () => {
+          console.log(`🔒 HTTPS server running on port ${port}`);
+          console.log(`📊 Environment: ${config.NODE_ENV}`);
+          console.log(`🔗 Health check: https://localhost:${port}/health`);
+        });
+      } catch (err) {
+        console.error('❌ Failed to load SSL certificates:', err.message);
+        console.log('💡 Falling back to HTTP server...');
+        startHTTPServer(port);
+      }
+    } else {
+      // Start HTTP server
+      startHTTPServer(port);
+    }
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);
   }
+};
+
+const startHTTPServer = (port) => {
+  const http = require('http');
+  http.createServer(app).listen(port, '0.0.0.0', () => {
+    console.log(`🚀 HTTP server running on port ${port}`);
+    console.log(`📊 Environment: ${config.NODE_ENV}`);
+    console.log(`🔗 Health check: http://localhost:${port}/health`);
+    console.log(`🌐 External access: http://YOUR_EC2_IP:${port}`);
+  });
 };
 
 startServer();

@@ -43,7 +43,7 @@ async function uploadToS3(file) {
     throw error;
   }
 }
-const Post = require('../models/Post');
+const { Post } = require('../db');
 const { authenticateToken, requireRole, optionalAuth } = require('../middleware/auth');
 const { contentRateLimit } = require('../middleware/ratelimit');
 const { validatePost } = require('../middleware/validation');
