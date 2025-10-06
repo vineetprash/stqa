@@ -6,7 +6,6 @@ const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const morgan = require('morgan');
-const { connectDatabase } = require('./src/config/database');
 const config = require('./src/config/config');
 const { generalRateLimit } = require('./src/middleware/ratelimit');
 const authRoutes = require('./src/routes/auth');
@@ -99,7 +98,8 @@ app.use((req, res) => {
 // Start server with HTTP/HTTPS support
 const startServer = async () => {
   try {
-    await connectDatabase();
+    // Skip MongoDB connection - using DynamoDB directly
+    console.log('🗄️  Using DynamoDB (skipping MongoDB connection)');
 
     const port = config.PORT || 3000;
     const useHTTPS = process.env.USE_HTTPS === 'true';

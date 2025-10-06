@@ -1,5 +1,5 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand } = require('@aws-sdk/lib-dynamodb');
+const { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand, QueryCommand } = require('@aws-sdk/lib-dynamodb');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 
@@ -11,6 +11,88 @@ const client = new DynamoDBClient({
 
 const docClient = DynamoDBDocumentClient.from(client);
 const tableName = process.env.DYNAMODB_USERS_TABLE || 'Users';
+
+// Helper to translate MongoDB-style queries to DynamoDB FilterExpression
+const buildFilterExpression = (query) => {
+  const expressions = [];
+  const values = {};
+  const names = {};
+  let valueCounter = 0;
+
+  const processCondition = (key, value) => {
+    if (key === '$or') {
+      // Handle $or operator
+      const orExpressions = value.map(condition => {
+        const orParts = [];
+        Object.entries(condition).forEach(([k, v]) => {
+          const valName = `:val${valueCounter++}`;
+          const attrName = `#${k}`;
+          orParts.push(`${attrName} = ${valName}`);
+          values[valName] = v;
+          names[attrName] = k;
+        });
+        return `(${orParts.join(' OR ')})`;
+      });
+      expressions.push(`(${orExpressions.join(' OR ')})`);
+    } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      // Handle MongoDB operators
+      Object.entries(value).forEach(([op, val]) => {
+        const valName = `:val${valueCounter++}`;
+        const attrName = `#${key}`;
+        
+        if (op === '$in') {
+          // Handle $in operator
+          const inValues = val.map((v, i) => {
+            const vn = `:val${valueCounter++}`;
+            values[vn] = v;
+            return vn;
+          });
+          expressions.push(`${attrName} IN (${inValues.join(', ')})`);
+          names[attrName] = key;
+        } else if (op === '$lte') {
+          expressions.push(`${attrName} <= ${valName}`);
+          values[valName] = val;
+          names[attrName] = key;
+        } else if (op === '$gte') {
+          expressions.push(`${attrName} >= ${valName}`);
+          values[valName] = val;
+          names[attrName] = key;
+        } else if (op === '$lt') {
+          expressions.push(`${attrName} < ${valName}`);
+          values[valName] = val;
+          names[attrName] = key;
+        } else if (op === '$gt') {
+          expressions.push(`${attrName} > ${valName}`);
+          values[valName] = val;
+          names[attrName] = key;
+        } else if (op === '$ne') {
+          expressions.push(`${attrName} <> ${valName}`);
+          values[valName] = val;
+          names[attrName] = key;
+        }
+      });
+    } else {
+      // Simple equality
+      const valName = `:val${valueCounter++}`;
+      const attrName = `#${key}`;
+      expressions.push(`${attrName} = ${valName}`);
+      values[valName] = value;
+      names[attrName] = key;
+    }
+  };
+
+  Object.entries(query).forEach(([key, value]) => {
+    if (key !== '$text') { // Skip $text for now, would need ElasticSearch integration
+      processCondition(key, value);
+    }
+  });
+
+  return {
+    FilterExpression: expressions.length > 0 ? expressions.join(' AND ') : undefined,
+    ExpressionAttributeValues: Object.keys(values).length > 0 ? values : undefined,
+    ExpressionAttributeNames: Object.keys(names).length > 0 ? names : undefined
+  };
+};
 
 // Helper functions
 const formatUser = (item) => {
@@ -51,10 +133,106 @@ const prepareForDynamo = (data) => {
   return dynamoData;
 };
 
+// Query builder for chainable methods
+class UserQuery {
+  constructor(query = {}) {
+    this.query = query;
+    this.options = {};
+  }
+
+  populate(field, select) {
+    // DynamoDB doesn't support joins, but we can fetch related data after
+    this.options.populate = { field, select };
+    return this;
+  }
+
+  sort(sortObj) {
+    this.options.sort = sortObj;
+    return this;
+  }
+
+  limit(num) {
+    this.options.limit = num;
+    return this;
+  }
+
+  skip(num) {
+    this.options.skip = num;
+    return this;
+  }
+
+  select(fields) {
+    this.options.select = fields;
+    return this;
+  }
+
+  async exec() {
+    return await User._executeQuery(this.query, this.options);
+  }
+}
+
 // Simple DynamoDB User operations
 const User = {
+  // Internal method to execute queries
+  async _executeQuery(query, options = {}) {
+    try {
+      const scanParams = { TableName: tableName };
+      
+      // Build filter expression from MongoDB-style query
+      if (Object.keys(query).length > 0 && !query._id && !query.id) {
+        const { FilterExpression, ExpressionAttributeValues, ExpressionAttributeNames } = buildFilterExpression(query);
+        if (FilterExpression) scanParams.FilterExpression = FilterExpression;
+        if (ExpressionAttributeValues) scanParams.ExpressionAttributeValues = ExpressionAttributeValues;
+        if (ExpressionAttributeNames) scanParams.ExpressionAttributeNames = ExpressionAttributeNames;
+      }
+
+      if (options.limit && !options.skip) {
+        scanParams.Limit = options.limit;
+      }
+
+      const response = await docClient.send(new ScanCommand(scanParams));
+      let results = (response.Items || []).map(formatUser);
+
+      // Apply sorting
+      if (options.sort) {
+        const sortEntries = Object.entries(options.sort);
+        results.sort((a, b) => {
+          for (const [sortKey, direction] of sortEntries) {
+            const aVal = a[sortKey];
+            const bVal = b[sortKey];
+            if (aVal === bVal) continue;
+            
+            let comparison = 0;
+            if (aVal > bVal) comparison = 1;
+            if (aVal < bVal) comparison = -1;
+            
+            return direction === -1 ? -comparison : comparison;
+          }
+          return 0;
+        });
+      }
+
+      // Apply skip and limit
+      if (options.skip) results = results.slice(options.skip);
+      if (options.limit && options.skip) results = results.slice(0, options.limit);
+
+      // Handle populate (fetch related data)
+      if (options.populate && results.length > 0) {
+        // For User populate, we might need to fetch related Post data
+        // This is a simplified version - you'd need to implement actual join logic
+        console.log('⚠️ DynamoDB populate is limited - related data not fully supported');
+      }
+
+      return results;
+    } catch (error) {
+      console.error('DynamoDB _executeQuery error:', error);
+      throw error;
+    }
+  },
+
   async findOne(query, options = {}) {
     try {
+      // Handle direct ID lookup
       if (query._id || query.id) {
         const response = await docClient.send(new GetCommand({
           TableName: tableName,
@@ -63,18 +241,9 @@ const User = {
         return formatUser(response.Item);
       }
 
-      // Scan for other queries
-      const scanParams = { TableName: tableName };
-      if (query.email) {
-        scanParams.FilterExpression = 'email = :email';
-        scanParams.ExpressionAttributeValues = { ':email': query.email };
-      } else if (query.username) {
-        scanParams.FilterExpression = 'username = :username';
-        scanParams.ExpressionAttributeValues = { ':username': query.username };
-      }
-
-      const response = await docClient.send(new ScanCommand(scanParams));
-      return formatUser(response.Items?.[0]);
+      // Use query builder for complex queries
+      const results = await this._executeQuery(query, { ...options, limit: 1 });
+      return results[0] || null;
     } catch (error) {
       console.error('DynamoDB findOne error:', error);
       throw error;
@@ -87,7 +256,17 @@ const User = {
         TableName: tableName,
         Key: { id: id.toString() }
       }));
-      return formatUser(response.Item);
+      const user = formatUser(response.Item);
+      
+      // Support chainable methods
+      if (options.select || options.populate) {
+        const query = new UserQuery({ id });
+        if (options.select) query.select(options.select);
+        if (options.populate) query.populate(options.populate);
+        return query;
+      }
+      
+      return user;
     } catch (error) {
       console.error('DynamoDB findById error:', error);
       throw error;
@@ -95,40 +274,20 @@ const User = {
   },
 
   async find(query = {}, options = {}) {
-    try {
-      const scanParams = { TableName: tableName };
-      
-      if (Object.keys(query).length > 0) {
-        const expressions = [];
-        const values = {};
-        Object.entries(query).forEach(([key, value], i) => {
-          expressions.push(`${key} = :val${i}`);
-          values[`:val${i}`] = value;
-        });
-        scanParams.FilterExpression = expressions.join(' AND ');
-        scanParams.ExpressionAttributeValues = values;
-      }
-
-      if (options.limit) scanParams.Limit = options.limit;
-
-      const response = await docClient.send(new ScanCommand(scanParams));
-      let results = (response.Items || []).map(formatUser);
-
-      // Simple sorting and skipping
-      if (options.sort) {
-        const [sortKey, direction] = Object.entries(options.sort)[0];
-        results.sort((a, b) => {
-          const comparison = a[sortKey] > b[sortKey] ? 1 : -1;
-          return direction === -1 ? -comparison : comparison;
-        });
-      }
-
-      if (options.skip) results = results.slice(options.skip);
-      return results;
-    } catch (error) {
-      console.error('DynamoDB find error:', error);
-      throw error;
+    // Return query builder for chaining
+    const queryBuilder = new UserQuery(query);
+    if (options.sort) queryBuilder.sort(options.sort);
+    if (options.limit) queryBuilder.limit(options.limit);
+    if (options.skip) queryBuilder.skip(options.skip);
+    if (options.select) queryBuilder.select(options.select);
+    if (options.populate) queryBuilder.populate(options.populate);
+    
+    // If no chaining is needed, execute immediately
+    if (Object.keys(options).length === 0) {
+      return queryBuilder;
     }
+    
+    return queryBuilder;
   },
 
   async create(data) {

@@ -2,6 +2,10 @@
 const express = require('express');
 const multer = require('multer');
 const AWS = require('aws-sdk');
+const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+const { DynamoDBDocumentClient, ScanCommand, GetCommand, PutCommand, UpdateCommand, DeleteCommand } = require('@aws-sdk/lib-dynamodb');
+const { v4: uuidv4 } = require('uuid');
+
 const storage = multer.memoryStorage();
 const upload = multer({ storage });
 
@@ -11,6 +15,27 @@ const s3 = new AWS.S3({
   secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
   region: process.env.AWS_REGION
 });
+
+// Configure DynamoDB
+const dynamoClient = new DynamoDBClient({
+  region: process.env.AWS_REGION || 'ap-south-1',
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+  }
+});
+const docClient = DynamoDBDocumentClient.from(dynamoClient);
+const POSTS_TABLE = process.env.DYNAMODB_POSTS_TABLE || 'Posts';
+const USERS_TABLE = process.env.DYNAMODB_USERS_TABLE || 'Users';
+
+// Helper function to find user by ID
+async function findUserById(id) {
+  const response = await docClient.send(new GetCommand({
+    TableName: USERS_TABLE,
+    Key: { id }
+  }));
+  return response.Item || null;
+}
 
 async function uploadToS3(file) {
   console.log('📤 Starting S3 upload:', { 
@@ -43,7 +68,7 @@ async function uploadToS3(file) {
     throw error;
   }
 }
-const { Post } = require('../db');
+
 const { authenticateToken, requireRole, optionalAuth } = require('../middleware/auth');
 const { contentRateLimit } = require('../middleware/ratelimit');
 const { validatePost } = require('../middleware/validation');
@@ -87,13 +112,84 @@ router.get('/', optionalAuth, async (req, res) => {
 
     console.log('🔍 Posts query built:', query);
 
-    const posts = await Post.find(query)
-      .populate('author', 'username profile.firstName profile.lastName')
-      .sort({ publishedAt: -1, createdAt: -1 })
-      .limit(parseInt(limit))
-      .skip((parseInt(page) - 1) * parseInt(limit));
-
-    const total = await Post.countDocuments(query);
+    // Scan DynamoDB for posts
+    const scanParams = { TableName: POSTS_TABLE };
+    
+    // Build filter expression
+    const expressions = [];
+    const values = {};
+    const names = {};
+    
+    if (query.status) {
+      expressions.push('#status = :status');
+      values[':status'] = query.status;
+      names['#status'] = 'status';
+    }
+    
+    if (query.publishedAt && query.publishedAt.$lte) {
+      expressions.push('#publishedAt <= :publishedAt');
+      values[':publishedAt'] = query.publishedAt.$lte.toISOString();
+      names['#publishedAt'] = 'publishedAt';
+    }
+    
+    if (query.author) {
+      expressions.push('#author = :author');
+      values[':author'] = query.author;
+      names['#author'] = 'author';
+    }
+    
+    if (expressions.length > 0) {
+      scanParams.FilterExpression = expressions.join(' AND ');
+      scanParams.ExpressionAttributeValues = values;
+      scanParams.ExpressionAttributeNames = names;
+    }
+    
+    const response = await docClient.send(new ScanCommand(scanParams));
+    let allPosts = response.Items || [];
+    
+    // Sort posts
+    allPosts.sort((a, b) => {
+      const aDate = new Date(a.publishedAt || a.createdAt);
+      const bDate = new Date(b.publishedAt || b.createdAt);
+      return bDate - aDate;
+    });
+    
+    // Populate authors
+    const authorIds = [...new Set(allPosts.map(p => p.author).filter(Boolean))];
+    const authors = {};
+    
+    for (const authorId of authorIds) {
+      try {
+        const userResponse = await docClient.send(new GetCommand({
+          TableName: USERS_TABLE,
+          Key: { id: authorId }
+        }));
+        if (userResponse.Item) {
+          authors[authorId] = {
+            _id: userResponse.Item.id,
+            id: userResponse.Item.id,
+            username: userResponse.Item.username,
+            profile: userResponse.Item.profile
+          };
+        }
+      } catch (err) {
+        console.error('Error fetching author:', err);
+      }
+    }
+    
+    // Attach authors to posts
+    allPosts = allPosts.map(post => ({
+      ...post,
+      _id: post.id,
+      author: authors[post.author] || post.author,
+      likeCount: post.likes?.length || 0
+    }));
+    
+    // Apply pagination
+    const startIdx = (parseInt(page) - 1) * parseInt(limit);
+    const endIdx = startIdx + parseInt(limit);
+    const posts = allPosts.slice(startIdx, endIdx);
+    const total = allPosts.length;
 
     console.log('✅ Posts fetched successfully:', { 
       postsCount: posts.length, 
@@ -140,14 +236,46 @@ router.post('/view/:identifier', viewRateLimit, optionalAuth, shouldCountView, v
     
     const { identifier } = req.params;
     
-    // Check if identifier is ObjectId or slug
-    const isObjectId = /^[0-9a-fA-F]{24}$/.test(identifier);
-    const query = isObjectId ? { _id: identifier } : { slug: identifier };
+    // Check if identifier is UUID or slug
+    const isUUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/i.test(identifier);
+    const query = isUUID ? { id: identifier } : { slug: identifier };
 
     console.log('🔍 Looking for post with query:', query);
 
-    const post = await Post.findOne(query)
-      .populate('author', 'username profile');
+    // Find post by ID or slug
+    let post = null;
+    if (query.id) {
+      const response = await docClient.send(new GetCommand({
+        TableName: POSTS_TABLE,
+        Key: { id: query.id }
+      }));
+      post = response.Item;
+    } else if (query.slug) {
+      // Scan for slug (DynamoDB doesn't have slug as key)
+      const scanResponse = await docClient.send(new ScanCommand({
+        TableName: POSTS_TABLE,
+        FilterExpression: 'slug = :slug',
+        ExpressionAttributeValues: { ':slug': query.slug }
+      }));
+      post = scanResponse.Items?.[0];
+    }
+    
+    // Populate author if needed
+    if (post && post.author) {
+      const authorResponse = await docClient.send(new GetCommand({
+        TableName: USERS_TABLE,
+        Key: { id: post.author }
+      }));
+      
+      if (authorResponse.Item) {
+        post.author = {
+          _id: authorResponse.Item.id,
+          id: authorResponse.Item.id,
+          username: authorResponse.Item.username,
+          profile: authorResponse.Item.profile
+        };
+      }
+    }
 
     if (!post) {
       console.log('❌ Post not found:', { identifier, query });
@@ -196,7 +324,13 @@ router.post('/view/:identifier', viewRateLimit, optionalAuth, shouldCountView, v
       // 2. User is not the author
       // 3. No suspicious activity detected
       if (req.shouldCountView && userId !== authorId && !req.suspiciousActivity) {
-        await Post.findByIdAndUpdate(post._id, { $inc: { views: 1 } });
+        await docClient.send(new UpdateCommand({
+          TableName: POSTS_TABLE,
+          Key: { id: post._id || post.id },
+          UpdateExpression: 'SET #views = if_not_exists(#views, :zero) + :inc',
+          ExpressionAttributeNames: { '#views': 'views' },
+          ExpressionAttributeValues: { ':zero': 0, ':inc': 1 }
+        }));
         console.log(`👁️ View counted for post ${post._id} from ${req.ip || 'unknown IP'}, user: ${userId || 'anonymous'}`);
       } else if (req.suspiciousActivity) {
         console.log(`🚨 Suspicious view activity detected for post ${post._id} from ${req.ip || 'unknown IP'}`);
@@ -270,25 +404,59 @@ router.post('/', authenticateToken, contentRateLimit, upload.array('images'), as
       imagesCount: imageUrls.length 
     });
 
-    const post = new Post({
+    // Create post directly in DynamoDB
+    const postId = uuidv4();
+    const now = new Date().toISOString();
+    
+    const postData = {
+      id: postId,
       title,
       content,
       author: req.user._id,
       status,
       tags: Array.isArray(tagArr) ? tagArr.slice(0, 10) : [],
-      images: imageUrls
-    });
-
-    await post.save();
-    console.log('💾 Post saved to database:', { postId: post._id, title: post.title });
+      images: imageUrls,
+      views: 0,
+      likes: [],
+      createdAt: now,
+      updatedAt: now
+    };
     
-    await post.populate('author', 'username profile');
-    console.log('✅ Post created successfully:', { postId: post._id, title: post.title, author: post.author.username });
+    if (status === 'published') {
+      postData.publishedAt = now;
+    }
+
+    await docClient.send(new PutCommand({
+      TableName: POSTS_TABLE,
+      Item: postData
+    }));
+
+    console.log('💾 Post saved to database:', { postId, title });
+    
+    // Get author info for response
+    const authorResponse = await docClient.send(new GetCommand({
+      TableName: USERS_TABLE,
+      Key: { id: req.user._id }
+    }));
+    
+    const responsePost = {
+      _id: postId,
+      id: postId,
+      ...postData,
+      author: authorResponse.Item ? {
+        _id: authorResponse.Item.id,
+        id: authorResponse.Item.id,
+        username: authorResponse.Item.username,
+        profile: authorResponse.Item.profile
+      } : req.user._id
+    };
+    
+    console.log('✅ Post created successfully:', { postId, title });
 
     res.status(201).json({
       success: true,
       message: 'Post created successfully',
-      data: { post }
+      data: { post: responsePost }
     });
   } catch (error) {
     console.error('💥 Create post error:', {
@@ -374,19 +542,36 @@ router.put('/:id', authenticateToken, upload.array('images'), async (req, res) =
       imagesChanged: imageUrls.length !== (post.images?.length || 0)
     });
     
-    post.title = req.body.title || post.title;
-    post.content = req.body.content || post.content;
-    post.status = req.body.status || post.status;
-    post.tags = Array.isArray(tagArr) ? tagArr.slice(0, 10) : post.tags;
-    post.images = imageUrls;
+    const updateData = {
+      title: req.body.title || post.title,
+      content: req.body.content || post.content,
+      status: req.body.status || post.status,
+      tags: Array.isArray(tagArr) ? tagArr.slice(0, 10) : post.tags,
+      images: imageUrls
+    };
     
-    await post.save();
-    console.log('💾 Post updated and saved:', { postId: post._id, title: post.title });
+    const updatedPost = await Post.findByIdAndUpdate(req.params.id, updateData);
+    console.log('💾 Post updated and saved:', { postId: updatedPost._id, title: updatedPost.title });
     
-    await post.populate('author', 'username profile');
-    console.log('✅ Post update successful:', { postId: post._id, title: post.title, author: post.author.username });
+    // Populate author manually if needed
+    let responsePost = updatedPost;
+    if (updatedPost.author && typeof updatedPost.author === 'string') {
+      const author = await findUserById(updatedPost.author);
+      if (author) {
+        responsePost = {
+          ...updatedPost,
+          author: {
+            id: author.id,
+            username: author.username,
+            profile: author.profile
+          }
+        };
+      }
+    }
     
-    res.json({ success: true, message: 'Post updated successfully', data: { post } });
+    console.log('✅ Post update successful:', { postId: updatedPost._id, title: updatedPost.title });
+    
+    res.json({ success: true, message: 'Post updated successfully', data: { post: responsePost } });
   } catch (error) {
     console.error('💥 Update post error:', {
       error: error.message,

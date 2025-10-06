@@ -1,5 +1,41 @@
 const MongoPost = require('../../models/Post');
 
+// Query builder wrapper for MongoDB to match DynamoDB interface
+class PostQuery {
+  constructor(query) {
+    this.mongoQuery = query;
+  }
+
+  populate(field, select) {
+    this.mongoQuery = this.mongoQuery.populate(field, select);
+    return this;
+  }
+
+  sort(sortObj) {
+    this.mongoQuery = this.mongoQuery.sort(sortObj);
+    return this;
+  }
+
+  limit(num) {
+    this.mongoQuery = this.mongoQuery.limit(num);
+    return this;
+  }
+
+  skip(num) {
+    this.mongoQuery = this.mongoQuery.skip(num);
+    return this;
+  }
+
+  select(fields) {
+    this.mongoQuery = this.mongoQuery.select(fields);
+    return this;
+  }
+
+  async exec() {
+    return await this.mongoQuery.exec();
+  }
+}
+
 // Simple MongoDB Post operations
 const Post = {
   async findOne(query, options = {}) {
@@ -23,7 +59,9 @@ const Post = {
     if (options.skip) mongoQuery = mongoQuery.skip(options.skip);
     if (options.select) mongoQuery = mongoQuery.select(options.select);
     if (options.populate) mongoQuery = mongoQuery.populate(options.populate);
-    return await mongoQuery.exec();
+    
+    // Return query builder for chaining
+    return new PostQuery(mongoQuery);
   },
 
   async create(data) {

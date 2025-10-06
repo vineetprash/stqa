@@ -1,5 +1,5 @@
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand } = require('@aws-sdk/lib-dynamodb');
+const { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand, DeleteCommand, ScanCommand, QueryCommand } = require('@aws-sdk/lib-dynamodb');
 const { v4: uuidv4 } = require('uuid');
 
 // Initialize DynamoDB client
@@ -10,6 +10,88 @@ const client = new DynamoDBClient({
 
 const docClient = DynamoDBDocumentClient.from(client);
 const tableName = process.env.DYNAMODB_POSTS_TABLE || 'Posts';
+
+// Helper to translate MongoDB-style queries to DynamoDB FilterExpression
+const buildFilterExpression = (query) => {
+  const expressions = [];
+  const values = {};
+  const names = {};
+  let valueCounter = 0;
+
+  const processCondition = (key, value) => {
+    if (key === '$or') {
+      // Handle $or operator
+      const orExpressions = value.map(condition => {
+        const orParts = [];
+        Object.entries(condition).forEach(([k, v]) => {
+          const valName = `:val${valueCounter++}`;
+          const attrName = `#${k}`;
+          orParts.push(`${attrName} = ${valName}`);
+          values[valName] = v;
+          names[attrName] = k;
+        });
+        return `(${orParts.join(' OR ')})`;
+      });
+      expressions.push(`(${orExpressions.join(' OR ')})`);
+    } else if (typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
+      // Handle MongoDB operators
+      Object.entries(value).forEach(([op, val]) => {
+        const valName = `:val${valueCounter++}`;
+        const attrName = `#${key}`;
+        
+        if (op === '$in') {
+          // Handle $in operator
+          const inValues = val.map((v) => {
+            const vn = `:val${valueCounter++}`;
+            values[vn] = v;
+            return vn;
+          });
+          expressions.push(`${attrName} IN (${inValues.join(', ')})`);
+          names[attrName] = key;
+        } else if (op === '$lte') {
+          expressions.push(`${attrName} <= ${valName}`);
+          values[valName] = val instanceof Date ? val.toISOString() : val;
+          names[attrName] = key;
+        } else if (op === '$gte') {
+          expressions.push(`${attrName} >= ${valName}`);
+          values[valName] = val instanceof Date ? val.toISOString() : val;
+          names[attrName] = key;
+        } else if (op === '$lt') {
+          expressions.push(`${attrName} < ${valName}`);
+          values[valName] = val instanceof Date ? val.toISOString() : val;
+          names[attrName] = key;
+        } else if (op === '$gt') {
+          expressions.push(`${attrName} > ${valName}`);
+          values[valName] = val instanceof Date ? val.toISOString() : val;
+          names[attrName] = key;
+        } else if (op === '$ne') {
+          expressions.push(`${attrName} <> ${valName}`);
+          values[valName] = val;
+          names[attrName] = key;
+        }
+      });
+    } else {
+      // Simple equality
+      const valName = `:val${valueCounter++}`;
+      const attrName = `#${key}`;
+      expressions.push(`${attrName} = ${valName}`);
+      values[valName] = value;
+      names[attrName] = key;
+    }
+  };
+
+  Object.entries(query).forEach(([key, value]) => {
+    if (key !== '$text') { // Skip $text for now
+      processCondition(key, value);
+    }
+  });
+
+  return {
+    FilterExpression: expressions.length > 0 ? expressions.join(' AND ') : undefined,
+    ExpressionAttributeValues: Object.keys(values).length > 0 ? values : undefined,
+    ExpressionAttributeNames: Object.keys(names).length > 0 ? names : undefined
+  };
+};
 
 // Helper functions
 const formatPost = (item) => {
@@ -56,10 +138,139 @@ const prepareForDynamo = (data) => {
   return dynamoData;
 };
 
+// Query builder for chainable methods
+class PostQuery {
+  constructor(query = {}) {
+    this.query = query;
+    this.options = {};
+  }
+
+  populate(field, select) {
+    this.options.populate = { field, select };
+    return this;
+  }
+
+  sort(sortObj) {
+    this.options.sort = sortObj;
+    return this;
+  }
+
+  limit(num) {
+    this.options.limit = num;
+    return this;
+  }
+
+  skip(num) {
+    this.options.skip = num;
+    return this;
+  }
+
+  select(fields) {
+    this.options.select = fields;
+    return this;
+  }
+
+  async exec() {
+    return await Post._executeQuery(this.query, this.options);
+  }
+}
+
 // Simple DynamoDB Post operations
 const Post = {
+  // Internal method to execute queries with populate support
+  async _executeQuery(query, options = {}) {
+    try {
+      const scanParams = { TableName: tableName };
+      
+      // Build filter expression from MongoDB-style query
+      if (Object.keys(query).length > 0 && !query._id && !query.id) {
+        const { FilterExpression, ExpressionAttributeValues, ExpressionAttributeNames } = buildFilterExpression(query);
+        if (FilterExpression) scanParams.FilterExpression = FilterExpression;
+        if (ExpressionAttributeValues) scanParams.ExpressionAttributeValues = ExpressionAttributeValues;
+        if (ExpressionAttributeNames) scanParams.ExpressionAttributeNames = ExpressionAttributeNames;
+      }
+
+      if (options.limit && !options.skip) {
+        scanParams.Limit = options.limit;
+      }
+
+      const response = await docClient.send(new ScanCommand(scanParams));
+      let results = (response.Items || []).map(formatPost);
+
+      // Apply sorting (support multiple sort keys)
+      if (options.sort) {
+        const sortEntries = Object.entries(options.sort);
+        results.sort((a, b) => {
+          for (const [sortKey, direction] of sortEntries) {
+            const aVal = a[sortKey];
+            const bVal = b[sortKey];
+            if (aVal === bVal) continue;
+            
+            let comparison = 0;
+            if (aVal > bVal) comparison = 1;
+            if (aVal < bVal) comparison = -1;
+            
+            return direction === -1 ? -comparison : comparison;
+          }
+          return 0;
+        });
+      }
+
+      // Apply skip and limit
+      if (options.skip) results = results.slice(options.skip);
+      if (options.limit && options.skip) results = results.slice(0, options.limit);
+
+      // Handle populate (fetch related User data)
+      if (options.populate && results.length > 0) {
+        const { field, select } = options.populate;
+        if (field === 'author') {
+          // Lazy load User model to avoid circular dependency
+          const { User } = require('./index');
+          const authorIds = [...new Set(results.map(p => p.author).filter(Boolean))];
+          
+          const authors = await Promise.all(
+            authorIds.map(id => User.findById(id).catch(() => null))
+          );
+          
+          const authorMap = {};
+          authors.forEach(author => {
+            if (author) {
+              // Apply select fields if specified
+              if (select) {
+                const selectedAuthor = { _id: author._id, id: author.id };
+                select.split(' ').forEach(field => {
+                  if (field.includes('.')) {
+                    const [parent, child] = field.split('.');
+                    if (!selectedAuthor[parent]) selectedAuthor[parent] = {};
+                    selectedAuthor[parent][child] = author[parent]?.[child];
+                  } else {
+                    selectedAuthor[field] = author[field];
+                  }
+                });
+                authorMap[author.id] = selectedAuthor;
+              } else {
+                authorMap[author.id] = author;
+              }
+            }
+          });
+          
+          results = results.map(post => ({
+            ...post,
+            author: authorMap[post.author] || post.author
+          }));
+        }
+      }
+
+      return results;
+    } catch (error) {
+      console.error('DynamoDB _executeQuery error:', error);
+      throw error;
+    }
+  },
+
   async findOne(query, options = {}) {
     try {
+      // Handle direct ID lookup
       if (query._id || query.id) {
         const response = await docClient.send(new GetCommand({
           TableName: tableName,
@@ -68,20 +279,9 @@ const Post = {
         return formatPost(response.Item);
       }
 
-      const scanParams = { TableName: tableName };
-      if (Object.keys(query).length > 0) {
-        const expressions = [];
-        const values = {};
-        Object.entries(query).forEach(([key, value], i) => {
-          expressions.push(`${key} = :val${i}`);
-          values[`:val${i}`] = value;
-        });
-        scanParams.FilterExpression = expressions.join(' AND ');
-        scanParams.ExpressionAttributeValues = values;
-      }
-
-      const response = await docClient.send(new ScanCommand(scanParams));
-      return formatPost(response.Items?.[0]);
+      // Use query builder for complex queries
+      const results = await this._executeQuery(query, { ...options, limit: 1 });
+      return results[0] || null;
     } catch (error) {
       console.error('DynamoDB Post findOne error:', error);
       throw error;
@@ -94,7 +294,17 @@ const Post = {
         TableName: tableName,
         Key: { id: id.toString() }
       }));
-      return formatPost(response.Item);
+      const post = formatPost(response.Item);
+      
+      // Support chainable methods
+      if (options.select || options.populate) {
+        const query = new PostQuery({ id });
+        if (options.select) query.select(options.select);
+        if (options.populate) query.populate(options.populate);
+        return query;
+      }
+      
+      return post;
     } catch (error) {
       console.error('DynamoDB Post findById error:', error);
       throw error;
@@ -102,39 +312,16 @@ const Post = {
   },
 
   async find(query = {}, options = {}) {
-    try {
-      const scanParams = { TableName: tableName };
-      
-      if (Object.keys(query).length > 0) {
-        const expressions = [];
-        const values = {};
-        Object.entries(query).forEach(([key, value], i) => {
-          expressions.push(`${key} = :val${i}`);
-          values[`:val${i}`] = value;
-        });
-        scanParams.FilterExpression = expressions.join(' AND ');
-        scanParams.ExpressionAttributeValues = values;
-      }
-
-      if (options.limit) scanParams.Limit = options.limit;
-
-      const response = await docClient.send(new ScanCommand(scanParams));
-      let results = (response.Items || []).map(formatPost);
-
-      if (options.sort) {
-        const [sortKey, direction] = Object.entries(options.sort)[0];
-        results.sort((a, b) => {
-          const comparison = a[sortKey] > b[sortKey] ? 1 : -1;
-          return direction === -1 ? -comparison : comparison;
-        });
-      }
-
-      if (options.skip) results = results.slice(options.skip);
-      return results;
-    } catch (error) {
-      console.error('DynamoDB Post find error:', error);
-      throw error;
-    }
+    // Return query builder for chaining
+    const queryBuilder = new PostQuery(query);
+    if (options.sort) queryBuilder.sort(options.sort);
+    if (options.limit) queryBuilder.limit(options.limit);
+    if (options.skip) queryBuilder.skip(options.skip);
+    if (options.select) queryBuilder.select(options.select);
+    if (options.populate) queryBuilder.populate(options.populate);
+    
+    // If no chaining is needed, return the builder (it's chainable)
+    return queryBuilder;
   },
 
   async create(data) {

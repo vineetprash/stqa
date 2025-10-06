@@ -1,13 +1,147 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
-const { User } = require('../db');
+const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
+const { DynamoDBDocumentClient, ScanCommand, GetCommand, PutCommand, UpdateCommand, DeleteCommand } = require('@aws-sdk/lib-dynamodb');
+const bcrypt = require('bcryptjs');
+const { v4: uuidv4 } = require('uuid');
 const config = require('../config/config');
 const { authenticateToken } = require('../middleware/auth');
 const { authRateLimit } = require('../middleware/ratelimit');
 const { validateRegistration, validateLogin } = require('../middleware/validation');
 const emailService = require('../services/emailService');
 
+// Configure DynamoDB
+const dynamoClient = new DynamoDBClient({
+  region: process.env.AWS_REGION || 'ap-south-1',
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
+  }
+});
+const docClient = DynamoDBDocumentClient.from(dynamoClient);
+const USERS_TABLE = process.env.DYNAMODB_USERS_TABLE || 'Users';
+
 const router = express.Router();
+
+// Helper functions for DynamoDB operations
+async function findUserByEmail(email) {
+  const response = await docClient.send(new ScanCommand({
+    TableName: USERS_TABLE,
+    FilterExpression: '#email = :email',
+    ExpressionAttributeNames: { '#email': 'email' },
+    ExpressionAttributeValues: { ':email': email }
+  }));
+  return response.Items?.[0] || null;
+}
+
+async function findUserByUsername(username) {
+  const response = await docClient.send(new ScanCommand({
+    TableName: USERS_TABLE,
+    FilterExpression: '#username = :username',
+    ExpressionAttributeNames: { '#username': 'username' },
+    ExpressionAttributeValues: { ':username': username }
+  }));
+  return response.Items?.[0] || null;
+}
+
+async function findUserByEmailOrUsername(email, username) {
+  const response = await docClient.send(new ScanCommand({
+    TableName: USERS_TABLE,
+    FilterExpression: '#email = :email OR #username = :username',
+    ExpressionAttributeNames: { 
+      '#email': 'email',
+      '#username': 'username'
+    },
+    ExpressionAttributeValues: { 
+      ':email': email,
+      ':username': username
+    }
+  }));
+  return response.Items?.[0] || null;
+}
+
+async function findUserById(id) {
+  const response = await docClient.send(new GetCommand({
+    TableName: USERS_TABLE,
+    Key: { id }
+  }));
+  return response.Item || null;
+}
+
+async function findActiveUserByEmail(email) {
+  const response = await docClient.send(new ScanCommand({
+    TableName: USERS_TABLE,
+    FilterExpression: '#email = :email AND #isActive = :isActive',
+    ExpressionAttributeNames: { 
+      '#email': 'email',
+      '#isActive': 'isActive'
+    },
+    ExpressionAttributeValues: { 
+      ':email': email,
+      ':isActive': true
+    }
+  }));
+  return response.Items?.[0] || null;
+}
+
+async function createUser(userData) {
+  const id = uuidv4();
+  const now = new Date().toISOString();
+  const hashedPassword = await bcrypt.hash(userData.password, 12);
+  
+  const user = {
+    id,
+    ...userData,
+    password: hashedPassword,
+    role: 'user',
+    isActive: true,
+    verified: false,
+    createdAt: now,
+    updatedAt: now
+  };
+  
+  await docClient.send(new PutCommand({
+    TableName: USERS_TABLE,
+    Item: user
+  }));
+  
+  return { ...user, _id: id };
+}
+
+async function updateUser(id, updates) {
+  const expressions = [];
+  const values = {};
+  const names = {};
+  
+  Object.entries(updates).forEach(([key, value]) => {
+    if (key.includes('.')) {
+      const [parent, child] = key.split('.');
+      expressions.push(`#${parent}.#${child} = :${key.replace('.', '_')}`);
+      names[`#${parent}`] = parent;
+      names[`#${child}`] = child;
+      values[`:${key.replace('.', '_')}`] = value;
+    } else {
+      expressions.push(`#${key} = :${key}`);
+      values[`:${key}`] = value;
+      names[`#${key}`] = key;
+    }
+  });
+  
+  values[':updatedAt'] = new Date().toISOString();
+  expressions.push('#updatedAt = :updatedAt');
+  names['#updatedAt'] = 'updatedAt';
+  
+  const response = await docClient.send(new UpdateCommand({
+    TableName: USERS_TABLE,
+    Key: { id },
+    UpdateExpression: `SET ${expressions.join(', ')}`,
+    ExpressionAttributeValues: values,
+    ExpressionAttributeNames: names,
+    ReturnValues: 'ALL_NEW'
+  }));
+  
+  return { ...response.Attributes, _id: response.Attributes.id };
+}
 
 // Generate JWT token 
 const generateToken = (userId) => {
@@ -42,12 +176,8 @@ router.post('/register', authRateLimit, async (req, res) => {
     }
 
     console.log('🔍 Checking for existing user:', { email, username });
-    // Check if user exists with matching email OR username AND is verified
     
-
-    const existingUser = await User.findOne({
-      $or: [{ email }, { username }],
-   });
+    const existingUser = await findUserByEmailOrUsername(email, username);
 
     let partiallyRegisteredUser;
     if (existingUser && existingUser.verified) {
@@ -72,17 +202,17 @@ router.post('/register', authRateLimit, async (req, res) => {
       // Update the existing user
       const updateData = {
         username,
-        password,
+        password: await bcrypt.hash(password, 12),
         'profile.firstName': firstName,
         'profile.lastName': lastName
       };
       
-      user = await User.findByIdAndUpdate(partiallyRegisteredUser._id, updateData);
+      user = await updateUser(partiallyRegisteredUser.id, updateData);
     }
     // doesnt exist - create new user
     else {
       console.log('📝 Creating new user:', { email, username, firstName, lastName });
-      user = await User.create({
+      user = await createUser({
         username,
         email,
         password,
@@ -94,12 +224,12 @@ router.post('/register', authRateLimit, async (req, res) => {
     // Generate OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     user.otp = otp;
-    user.otpExpiry = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
-    console.log('🔐 OTP generated for user:', { userId: user._id, email, otp });
+    user.otpExpiry = new Date(Date.now() + 5 * 60 * 1000).toISOString(); // 5 minutes as ISO string
+    console.log('🔐 OTP generated for user:', { userId: user.id, email, otp });
     
     // Save user with OTP
-    await User.findByIdAndUpdate(user._id, { otp: user.otp, otpExpiry: user.otpExpiry });
-    console.log('💾 User saved to database:', { userId: user._id, email });
+    await updateUser(user.id, { otp: user.otp, otpExpiry: user.otpExpiry });
+    console.log('💾 User saved to database:', { userId: user.id, email });
 
     // Send OTP email
     console.log('📧 Sending OTP email to:', email);
@@ -112,12 +242,12 @@ router.post('/register', authRateLimit, async (req, res) => {
       console.log('✅ OTP email sent successfully to:', email);
     }
 
-    console.log('✅ Registration initiated successfully:', { userId: user._id, email });
+    console.log('✅ Registration initiated successfully:', { userId: user.id, email });
     res.status(201).json({
       success: true,
       message: 'Registration initiated. Please check your email for the OTP.',
       data: {
-        userId: user._id,
+        userId: user.id,
         email: user.email
       }
     });
@@ -133,7 +263,7 @@ router.post('/register', authRateLimit, async (req, res) => {
       message: 'Registration failed',
       error: config.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
-  }b
+  }
 });
 
 // Step 2: Verify OTP and complete registration
@@ -152,7 +282,7 @@ router.post('/verify-otp', authRateLimit, async (req, res) => {
 
     console.log('🔍 Finding user for OTP verification:', { userId });
     // Find user with OTP fields
-    const user = await User.findById(userId).select('+otp +otpExpiry');
+    const user = await findUserById(userId);
 
     if (!user) {
       console.log('❌ OTP verification failed: User not found', { userId });
@@ -172,7 +302,7 @@ router.post('/verify-otp', authRateLimit, async (req, res) => {
 
     console.log('🔐 Verifying OTP for user:', { userId, email: user.email });
     // Verify OTP
-    if (!user.otp || !user.otpExpiry || new Date() > user.otpExpiry || user.otp !== otp) {
+    if (!user.otp || !user.otpExpiry || new Date() > new Date(user.otpExpiry) || user.otp !== otp) {
       console.log('❌ OTP verification failed: Invalid or expired OTP', { userId, email: user.email });
       return res.status(400).json({
         success: false,
@@ -182,7 +312,7 @@ router.post('/verify-otp', authRateLimit, async (req, res) => {
 
     console.log('✅ OTP verified successfully, marking user as verified:', { userId, email: user.email });
     // Mark user as verified and clear OTP
-    await User.findByIdAndUpdate(userId, { 
+    await updateUser(userId, { 
       verified: true,
       otp: null,
       otpExpiry: null
@@ -193,7 +323,7 @@ router.post('/verify-otp', authRateLimit, async (req, res) => {
     await emailService.sendWelcomeEmail(user.email, user.profile.firstName);
 
     // Generate token
-    const token = generateToken(user._id);
+    const token = generateToken(user.id);
     console.log('🎫 Token generated for verified user:', { userId, email: user.email });
 
     res.json({
@@ -201,7 +331,7 @@ router.post('/verify-otp', authRateLimit, async (req, res) => {
       message: 'Email verified successfully',
       data: {
         user: {
-          id: user._id,
+          id: user.id,
           username: user.username,
           email: user.email,
           role: user.role,
@@ -239,7 +369,7 @@ router.post('/resend-otp', authRateLimit, async (req, res) => {
     }
 
     console.log('🔍 Finding user for OTP resend:', { userId });
-    const user = await User.findById(userId);
+    const user = await findUserById(userId);
 
     if (!user) {
       console.log('❌ OTP resend failed: User not found', { userId });
@@ -260,9 +390,9 @@ router.post('/resend-otp', authRateLimit, async (req, res) => {
     console.log('🔐 Generating new OTP for user:', { userId, email: user.email });
     // Generate new OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    await User.findByIdAndUpdate(userId, { 
+    await updateUser(userId, { 
       otp: otp,
-      otpExpiry: new Date(Date.now() + 5 * 60 * 1000)
+      otpExpiry: new Date(Date.now() + 5 * 60 * 1000).toISOString()
     });
 
     console.log('📧 Sending new OTP email to:', user.email);
@@ -304,7 +434,7 @@ router.post('/login', authRateLimit, validateLogin, async (req, res) => {
 
     console.log('🔍 Finding user for login:', { email });
     // Find user with password field
-    const user = await User.findOne({ email, isActive: true }).select('+password');
+    const user = await findActiveUserByEmail(email);
 
     if (!user) {
       console.log('❌ Login failed: User not found or inactive', { email });
@@ -314,41 +444,40 @@ router.post('/login', authRateLimit, validateLogin, async (req, res) => {
       });
     }
 
-    console.log('🔐 Checking password for user:', { userId: user._id, email });
+    console.log('🔐 Checking password for user:', { userId: user.id, email });
     // Check password  
-    const bcrypt = require('bcryptjs');
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
-      console.log('❌ Login failed: Invalid password', { userId: user._id, email });
+      console.log('❌ Login failed: Invalid password', { userId: user.id, email });
       return res.status(401).json({
         success: false,
         message: 'Invalid credentials'
       });
     }
 
-    console.log('🔍 Checking user verification status:', { userId: user._id, email, verified: user.verified });
+    console.log('🔍 Checking user verification status:', { userId: user.id, email, verified: user.verified });
     // Check if user is verified
     if (!user.verified) {
-      console.log('❌ Login failed: User not verified', { userId: user._id, email });
+      console.log('❌ Login failed: User not verified', { userId: user.id, email });
       return res.status(403).json({
         success: false,
         message: 'Please verify your email address first',
         requiresVerification: true,
-        userId: user._id
+        userId: user.id
       });
     }
 
-    console.log('🎫 Generating token for successful login:', { userId: user._id, email });
+    console.log('🎫 Generating token for successful login:', { userId: user.id, email });
     // Generate token
-    const token = generateToken(user._id);
+    const token = generateToken(user.id);
 
-    console.log('✅ Login successful:', { userId: user._id, email, role: user.role });
+    console.log('✅ Login successful:', { userId: user.id, email, role: user.role });
     res.json({
       success: true,
       message: 'Login successful',
       data: {
         user: {
-          _id: user._id,
+          id: user.id,
           username: user.username,
           email: user.email,
           role: user.role,
@@ -373,8 +502,8 @@ router.post('/login', authRateLimit, validateLogin, async (req, res) => {
 
 // Get current user
 router.get('/me', authenticateToken, async (req, res) => {
-  console.log('🔵 Get current user request:', { userId: req.user._id, email: req.user.email });
-  console.log('✅ Returning current user data:', { userId: req.user._id, email: req.user.email });
+  console.log('🔵 Get current user request:', { userId: req.user.id, email: req.user.email });
+  console.log('✅ Returning current user data:', { userId: req.user.id, email: req.user.email });
   res.json({
     success: true,
     data: { user: req.user }
