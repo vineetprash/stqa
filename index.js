@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const https = require('https');
-
+const morgan = require('morgan');
 const { connectDatabase } = require('./src/config/database');
 const config = require('./src/config/config');
 const { generalRateLimit } = require('./src/middleware/ratelimit');
@@ -30,7 +30,7 @@ app.use(cors({
   origin: '*',
   credentials: true
 }));
-
+app.use(morgan('combined'));
 // Body parsing
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true }));
@@ -49,17 +49,17 @@ app.get('/health', (req, res) => {
 });
 
 // Serve static files from React app build
-// app.use(express.static(path.join(__dirname, 'app/dist')));
+app.use(express.static(path.join(__dirname, 'app/dist')));
 
 // Serve React app for all non-API routes
-// app.use((req, res, next) => {
-//   if (req.path.startsWith('/api/')) return next();
-//   if (req.path === '/health') return next();
-//   if (req.method === 'GET') {
-//     return res.sendFile(path.join(__dirname, 'app/dist/index.html'));
-//   }
-//   next();
-// });
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/')) return next();
+  if (req.path === '/health') return next();
+  if (req.method === 'GET') {
+    return res.sendFile(path.join(__dirname, 'app/dist/index.html'));
+  }
+  next();
+});
 
 // Global error handler
 app.use((err, req, res, next) => {

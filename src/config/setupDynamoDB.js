@@ -1,9 +1,9 @@
 // DynamoDB table creation script
 const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
 const { CreateTableCommand, DescribeTableCommand } = require('@aws-sdk/client-dynamodb');
-
+require('dotenv').config();
 const client = new DynamoDBClient({
-  region: process.env.AWS_REGION || 'us-east-1',
+  region: process.env.AWS_REGION || 'ap-south-1',
   ...(process.env.AWS_ENDPOINT && { endpoint: process.env.AWS_ENDPOINT }),
 });
 
@@ -12,6 +12,7 @@ const createUsersTable = async () => {
   
   const params = {
     TableName: tableName,
+    
     KeySchema: [
       { AttributeName: 'id', KeyType: 'HASH' }
     ],
