@@ -27,7 +27,10 @@ const createUsersTable = async () => {
           { AttributeName: 'email', KeyType: 'HASH' }
         ],
         Projection: { ProjectionType: 'ALL' },
-        BillingMode: 'PAY_PER_REQUEST'
+        ProvisionedThroughput: {
+          ReadCapacityUnits: 2,
+          WriteCapacityUnits: 1
+        }
       },
       {
         IndexName: 'username-index',
@@ -35,10 +38,17 @@ const createUsersTable = async () => {
           { AttributeName: 'username', KeyType: 'HASH' }
         ],
         Projection: { ProjectionType: 'ALL' },
-        BillingMode: 'PAY_PER_REQUEST'
+        ProvisionedThroughput: {
+          ReadCapacityUnits: 2,
+          WriteCapacityUnits: 1
+        }
       }
     ],
-    BillingMode: 'PAY_PER_REQUEST'
+    BillingMode: 'PROVISIONED',
+    ProvisionedThroughput: {
+      ReadCapacityUnits: 5,
+      WriteCapacityUnits: 3
+    }
   };
 
   try {
@@ -84,7 +94,10 @@ const createPostsTable = async () => {
           { AttributeName: 'author', KeyType: 'HASH' }
         ],
         Projection: { ProjectionType: 'ALL' },
-        BillingMode: 'PAY_PER_REQUEST'
+        ProvisionedThroughput: {
+          ReadCapacityUnits: 3,
+          WriteCapacityUnits: 1
+        }
       },
       {
         IndexName: 'status-index',
@@ -92,10 +105,17 @@ const createPostsTable = async () => {
           { AttributeName: 'status', KeyType: 'HASH' }
         ],
         Projection: { ProjectionType: 'ALL' },
-        BillingMode: 'PAY_PER_REQUEST'
+        ProvisionedThroughput: {
+          ReadCapacityUnits: 3,
+          WriteCapacityUnits: 1
+        }
       }
     ],
-    BillingMode: 'PAY_PER_REQUEST'
+    BillingMode: 'PROVISIONED',
+    ProvisionedThroughput: {
+      ReadCapacityUnits: 8,
+      WriteCapacityUnits: 2
+    }
   };
 
   try {
