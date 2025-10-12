@@ -54,12 +54,19 @@ async function uploadToS3(file) {
   
   try {
     const data = await s3.upload(params).promise();
+    
+    // Convert S3 URL to CloudFront URL
+    const cloudFrontDomain = 'https://d31zlwq2mclheh.cloudfront.net';
+    const cloudFrontUrl = `${cloudFrontDomain}/${params.Key}`;
+    
     console.log('✅ S3 upload successful:', { 
       fileName: file.originalname, 
-      url: data.Location,
+      s3Url: data.Location,
+      cloudFrontUrl: cloudFrontUrl,
       key: params.Key 
     });
-    return data.Location;
+    
+    return cloudFrontUrl;
   } catch (error) {
     console.error('❌ S3 upload failed:', { 
       fileName: file.originalname, 
