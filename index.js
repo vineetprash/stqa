@@ -108,9 +108,10 @@ const startServer = async () => {
       // Try to start HTTPS server
       try {
         const options = {
-          key: fs.readFileSync(path.join(__dirname, 'key.pem')),
-          cert: fs.readFileSync(path.join(__dirname, 'cert.pem'))
+          key: fs.readFileSync('/etc/ssl/private/server.key'),
+          cert: fs.readFileSync('/etc/ssl/certs/server.crt')
         };
+
 
         https.createServer(options, app).listen(port, '0.0.0.0', () => {
           console.log(`🔒 HTTPS server running on port ${port}`);
