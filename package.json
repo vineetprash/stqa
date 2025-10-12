@@ -1,10 +1,22 @@
 {
-  "name": "js",
+  "name": "blog-api",
+  "version": "1.0.0",
+  "description": "Blog API with DynamoDB backend and comprehensive test suite",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
     "dev": "npx nodemon index.js",
-    "test": "echo \"No tests yet\" && exit 0",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "test:auth": "jest --testPathPattern=auth.test.js",
+    "test:posts": "jest --testPathPattern=posts.test.js",
+    "test:middleware": "jest --testPathPattern=middleware.test.js",
+    "test:integration": "jest --testPathPattern=integration.test.js",
+    "test:database": "jest --testPathPattern=database.test.js",
+    "test:unit": "jest --testPathPattern='auth|posts|middleware'",
+    "test:e2e": "jest --testPathPattern=integration",
+    "setup-test-fixtures": "node tests/fixtures/createTestImage.js",
     "deploy": "cd app && npm run build && cd .. && npm run dev"
   },
   "peerDependencies": {
@@ -28,5 +40,31 @@
     "multer": "^2.0.2",
     "nodemailer": "^7.0.5",
     "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^6.3.4"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "setupFilesAfterEnv": [
+      "<rootDir>/tests/setup.js"
+    ],
+    "testMatch": [
+      "<rootDir>/tests/**/*.test.js"
+    ],
+    "collectCoverageFrom": [
+      "src/**/*.js",
+      "!src/config/**/*.js",
+      "!src/models/**/*.js"
+    ],
+    "coverageReporters": [
+      "text",
+      "lcov",
+      "html"
+    ],
+    "coverageDirectory": "coverage",
+    "testTimeout": 30000,
+    "verbose": true
   }
 }
